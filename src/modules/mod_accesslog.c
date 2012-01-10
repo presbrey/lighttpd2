@@ -21,6 +21,12 @@
 LI_API gboolean mod_accesslog_init(liModules *mods, liModule *mod);
 LI_API gboolean mod_accesslog_free(liModules *mods, liModule *mod);
 
+typedef struct al_context al_context;
+struct al_context {
+	GString *log;
+	liPlugin *plugin;
+};
+
 struct al_data {
 	guint ts_ndx;
 };
@@ -360,6 +366,40 @@ static GString *al_format_log(liVRequest *vr, al_data *ald, GArray *format) {
 	return str;
 }
 
+static liHandlerResult al_write(liVRequest *vr, gpointer param, gpointer *context) {
+	UNUSED(context);
+
+	al_context *ctx = param;
+	GArray *format = _OPTIONPTR(vr, ctx->plugin, AL_OPTION_ACCESSLOG_FORMAT).list;
+	GString *msg = al_format_log(vr, ctx->plugin->data, format);
+	li_log_write_direct(vr->wrk->srv, vr, ctx->log, msg);
+
+	return LI_HANDLER_GO_ON;
+}
+
+static void al_write_free(liServer *srv, gpointer param) {
+	UNUSED(srv);
+
+	al_context *ctx = param;
+	g_string_free(ctx->log, TRUE);
+	g_slice_free(al_context, param);
+}
+
+static liAction* al_write_create(liServer *srv, liWorker *wrk, liPlugin* p, liValue *val, gpointer userdata) {
+	UNUSED(srv); UNUSED(wrk); UNUSED(userdata);
+
+	if (!val || val->type != LI_VALUE_STRING) {
+		ERROR(srv, "%s", "accesslog.write expects a string specifying the target");
+		return NULL;
+	}
+
+	al_context *ctx = g_slice_new(al_context);
+	ctx->log = g_string_new_len(GSTR_LEN(val->data.string));
+	ctx->plugin = p;
+
+	return li_action_new_function(al_write, NULL, al_write_free, ctx);
+}
+
 static void al_handle_vrclose(liVRequest *vr, liPlugin *p) {
 	/* VRequest closed, log it */
 	GString *msg;
@@ -463,6 +503,8 @@ static const liPluginOptionPtr optionptrs[] = {
 };
 
 static const liPluginAction actions[] = {
+	{ "accesslog.write", al_write_create, NULL },
+
 	{ NULL, NULL, NULL }
 };
 
